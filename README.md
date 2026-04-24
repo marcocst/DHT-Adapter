@@ -11,9 +11,31 @@
 ![image](docs/teaser.png)
 
 ## 📌 Updates
+- [21/04/2026] 🧩 **PEFT branch released** — T-LoRA reimplemented on 🤗 [PEFT](https://github.com/huggingface/peft) + 🤗 [Diffusers](https://github.com/huggingface/diffusers), with built-in multi-adapter support and a [LoRAShop](https://github.com/gemlab-vt/LoRAShop) integration for multi-concept generation. See the [`peft` branch](https://github.com/ControlGenAI/T-LoRA/tree/peft).
 - [04/02/2026] 🚀 T-LoRA on FLUX.1-dev release
 - [08/11/2025] 🎉 T-LoRA accepted to AAAI 2026
 - [08/07/2025] 🔥 T-LoRA release
+
+## 🧩 T-LoRA now on PEFT
+
+T-LoRA is now also available as a native 🤗 [PEFT](https://github.com/huggingface/peft) + 🤗 [Diffusers](https://github.com/huggingface/diffusers) implementation — with built-in multi-adapter support and a ready-to-use [LoRAShop](https://github.com/gemlab-vt/LoRAShop) integration for **multi-concept generation** on FLUX.1-dev — all in the [`peft`](https://github.com/ControlGenAI/T-LoRA/tree/peft) branch.
+
+![](https://raw.githubusercontent.com/ControlGenAI/T-LoRA/peft/docs/multi-concept.jpg)
+
+Highlights:
+
+- **PEFT-native adapters** (safetensors + metadata), plug-and-play with any Diffusers pipeline via a single `enable_timestep_hook(...)` call.
+- **Multi-adapter support** — load, switch or combine several T-LoRA adapters at inference time.
+- **LoRAShop integration out of the box** — generate images featuring multiple custom concepts in a single denoising pass.
+- **FLUX.1-dev** and **SD-XL** training scripts adapted from the official 🤗 Diffusers DreamBooth examples.
+
+```bash
+git clone https://github.com/ControlGenAI/T-LoRA.git -b peft
+```
+
+Full details and examples: [`peft` branch README](https://github.com/ControlGenAI/T-LoRA/tree/peft#readme).
+
+---
 
 ## 📌 Prerequisites
 
