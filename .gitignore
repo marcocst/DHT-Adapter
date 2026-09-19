@@ -22,6 +22,16 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
+dog_example2/
+dog_example3/
+dog_example4/
+dog_example5/
+dog_example6/
+dog_example7/
+FLUX-model/
+T-LoRA.pdf
+inference_output/
+参考代码/
 .installed.cfg
 *.egg
 MANIFEST

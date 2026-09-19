@@ -39,6 +39,156 @@ class LoRALinearLayer(nn.Module):
         return up_hidden_states.to(orig_dtype)
 
 
+class BSALinearLayer(nn.Module):
+    """A frozen B/A basis with a trainable rank-by-rank middle matrix S.
+
+    The effective adapter update is
+
+        B M(t) (S - S_ref) M(t) A x,
+
+    where M(t) is the timestep-dependent rank mask.  A and B are always
+    frozen.  Only S is trainable.  ``S_ref`` makes both supported
+    initializations exact no-ops at initialization for every timestep.
+    """
+
+    SUPPORTED_INITIALIZATIONS = {"random", "svd", "checkpoint"}
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        rank=4,
+        do_training=True,
+        sig_type=None,
+        original_layer=None,
+        init_mode="random",
+        svd_oversample=4,
+        svd_niter=4,
+        svd_device="auto",
+    ):
+        super().__init__()
+
+        if rank > min(in_features, out_features):
+            raise ValueError(
+                f"BSA rank {rank} must be less or equal than "
+                f"{min(in_features, out_features)}"
+            )
+        if init_mode not in self.SUPPORTED_INITIALIZATIONS:
+            raise ValueError(
+                f"Unsupported BSA initialization {init_mode!r}. Expected one of "
+                f"{sorted(self.SUPPORTED_INITIALIZATIONS)}."
+            )
+
+        self.rank = rank
+        self.init_mode = init_mode
+        self.down = nn.Linear(in_features, rank, bias=False)   # A
+        self.middle = nn.Linear(rank, rank, bias=False)        # S
+        self.up = nn.Linear(rank, out_features, bias=False)    # B
+        self.register_buffer(
+            "middle_reference",
+            torch.zeros(rank, rank),
+            persistent=True,
+        )
+
+        if init_mode == "random":
+            self._init_random()
+        elif init_mode == "svd":
+            if original_layer is None or not hasattr(original_layer, "weight"):
+                raise ValueError(
+                    "BSA SVD initialization requires the original nn.Linear layer "
+                    "whose W0.weight will be decomposed."
+                )
+            self._init_from_weight_svd(
+                original_layer.weight,
+                oversample=svd_oversample,
+                niter=svd_niter,
+                svd_device=svd_device,
+            )
+        else:
+            # Inference restores every tensor from lora.pt, so recomputing SVD or
+            # relying on RNG here would be both expensive and less reproducible.
+            self._init_checkpoint_placeholder()
+
+        self.down.requires_grad_(False)
+        self.up.requires_grad_(False)
+        self.middle.requires_grad_(True)
+
+    @torch.no_grad()
+    def _init_random(self):
+        # Both frozen bases must be non-zero; otherwise dL/dS would be zero.
+        nn.init.normal_(self.down.weight, std=1 / self.rank)
+        nn.init.normal_(self.up.weight, std=1 / self.rank)
+        nn.init.zeros_(self.middle.weight)
+        self.middle_reference.zero_()
+
+    @torch.no_grad()
+    def _init_checkpoint_placeholder(self):
+        nn.init.zeros_(self.down.weight)
+        nn.init.zeros_(self.middle.weight)
+        nn.init.zeros_(self.up.weight)
+        self.middle_reference.zero_()
+
+    @torch.no_grad()
+    def _init_from_weight_svd(self, weight, oversample, niter, svd_device):
+        if oversample < 1:
+            raise ValueError("svd_oversample must be at least 1.")
+        if niter < 0:
+            raise ValueError("svd_niter must be non-negative.")
+
+        if svd_device == "auto":
+            target_device = weight.device
+        elif svd_device == "cpu":
+            target_device = torch.device("cpu")
+        elif svd_device == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("bsa_svd_device='cuda' requires CUDA.")
+            target_device = torch.device("cuda")
+        else:
+            raise ValueError("bsa_svd_device must be one of: auto, cpu, cuda.")
+
+        work_weight = weight.detach().to(device=target_device, dtype=torch.float32)
+        min_dim = min(work_weight.shape)
+        q = min(max(self.rank, self.rank * oversample), min_dim)
+
+        # This is a decomposition of the pretrained projection W0 itself.  No
+        # gradient matrix is collected or decomposed.
+        U, singular_values, V = torch.svd_lowrank(
+            work_weight,
+            q=q,
+            niter=niter,
+        )
+        U_r = U[:, : self.rank]
+        Vh_r = V[:, : self.rank].transpose(0, 1)
+        S_r = torch.diag(singular_values[: self.rank])
+
+        self.up.weight.copy_(U_r.to(self.up.weight))
+        self.down.weight.copy_(Vh_r.to(self.down.weight))
+        self.middle.weight.copy_(S_r.to(self.middle.weight))
+        self.middle_reference.copy_(S_r.to(self.middle_reference))
+
+    def forward(self, hidden_states, mask=None):
+        if mask is None:
+            mask = torch.ones(
+                (1, self.rank),
+                device=hidden_states.device,
+                dtype=hidden_states.dtype,
+            )
+
+        orig_dtype = hidden_states.dtype
+        dtype = self.middle.weight.dtype
+        mask = mask.to(device=hidden_states.device, dtype=dtype)
+
+        # A and B are frozen, while S-S_ref is the trainable effective update.
+        down_hidden_states = self.down(hidden_states.to(dtype))
+        down_hidden_states = down_hidden_states * mask
+        middle_delta = self.middle.weight - self.middle_reference
+        middle_hidden_states = F.linear(down_hidden_states, middle_delta)
+        middle_hidden_states = middle_hidden_states * mask
+        up_hidden_states = self.up(middle_hidden_states)
+
+        return up_hidden_states.to(orig_dtype)
+
+
 class FluxLoraAttnProcessor(nn.Module):
     """Attention processor used typically in processing the SD3-like self-attention projections."""
 
@@ -62,10 +212,10 @@ class FluxLoraAttnProcessor(nn.Module):
             self.to_q_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.to_q)
             self.to_k_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.to_k)
             self.to_v_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.to_v)
-            if original_layer.to_out:
+            if getattr(original_layer, "to_out", None):
                 self.to_out_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.to_out[0])
 
-            if original_layer.add_q_proj:
+            if getattr(original_layer, "add_q_proj", None) is not None:
                 self.to_q_proj_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.add_q_proj)
                 self.to_k_proj_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.add_k_proj)
                 self.to_v_proj_lora = lora_linear_layer(hidden_size, hidden_size, rank, self.do_training, sig_type=sig_type, original_layer=original_layer.add_v_proj)
@@ -180,6 +330,7 @@ def default_set_attn_proc_func(
     hidden_size: int,
     cross_attention_dim,
     ori_attn_proc,
+    original_layer,
 ):
     return ori_attn_proc
 
@@ -200,8 +351,16 @@ def set_flux_transformer_attn_processor(
         dim_head = transformer.config.attention_head_dim
         num_heads = transformer.config.num_attention_heads
         if name.endswith("attn.processor"):
+            attention_module_name = name[: -len(".processor")]
+            original_layer = transformer.get_submodule(attention_module_name)
             attn_procs[name] = (
-                set_attn_proc_func(name, dim_head, num_heads, attn_processor)
+                set_attn_proc_func(
+                    name,
+                    dim_head,
+                    num_heads,
+                    attn_processor,
+                    original_layer,
+                )
                 if do_set_processor(name, set_attn_module_names)
                 else attn_processor
             )

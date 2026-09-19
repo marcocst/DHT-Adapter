@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 import gc
 import copy
+from functools import partial
 
 import torch
 import torch.utils.checkpoint
@@ -36,7 +37,9 @@ from optimizer.optimizer import setup_optimizer
 from model.base_model import setup_base_model
 from model.encode import encode_prompt, compute_text_embeddings
 from model.utils import unwrap_model, load_text_encoders, get_layer_by_name
+from model.rank_schedule import get_rank_by_timestep
 from model.lora import (
+    BSALinearLayer,
     FluxLoraAttnProcessor,
     LoRALinearLayer,
     set_flux_transformer_attn_processor,
@@ -119,12 +122,27 @@ def run_train(args):
     # Load the model
     tokenizer_one, tokenizer_two, text_encoder_cls_one, text_encoder_cls_two, text_encoder_one, text_encoder_two, vae, transformer, noise_scheduler, noise_scheduler_copy = setup_base_model(args, accelerator, weight_dtype)
 
+    if args.adapter_type == "bsa":
+        adapter_linear_layer = partial(
+            BSALinearLayer,
+            init_mode=args.bsa_init,
+            svd_oversample=args.bsa_svd_oversample,
+            svd_niter=args.bsa_svd_niter,
+            svd_device=args.bsa_svd_device,
+        )
+    else:
+        adapter_linear_layer = LoRALinearLayer
+
     set_flux_transformer_attn_processor(
         transformer,
-        set_attn_proc_func=lambda name, dh, nh, ap: FluxLoraAttnProcessor(
-            hidden_size=transformer.inner_dim, rank=args.rank, 
-            lora_linear_layer=LoRALinearLayer,
-            do_training=True, 
+        set_attn_proc_func=lambda name, dh, nh, ap, original_layer: FluxLoraAttnProcessor(
+            hidden_size=transformer.inner_dim,
+            rank=args.rank,
+            lora_linear_layer=adapter_linear_layer,
+            do_training=True,
+            # Preserve the exact legacy LoRA module/state-dict layout.  BSA
+            # needs the real projection layers for W0 SVD initialization.
+            original_layer=(original_layer if args.adapter_type == "bsa" else None),
         ),
     )
     lora_layers = AttnProcsLayers(transformer.attn_processors)
@@ -140,6 +158,14 @@ def run_train(args):
     transformer_lora_parameters = list(
         filter(lambda p: p.requires_grad, transformer.parameters())
     )
+    trainable_adapter_parameters = sum(
+        parameter.numel() for parameter in transformer_lora_parameters
+    )
+    print(
+        f"  Adapter type = {args.adapter_type}"
+        + (f" ({args.bsa_init})" if args.adapter_type == "bsa" else "")
+    )
+    print(f"  Trainable adapter parameters = {trainable_adapter_parameters:,}")
 
     # Optimization parameters
     transformer_parameters_with_lr = {
@@ -255,12 +281,37 @@ def run_train(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    def get_rank_by_timestep(timestep, max_timestep, max_rank, min_rank=1):
-        r = (
-            int((max_timestep - timestep) * (max_rank - min_rank) / max_timestep)
-            + min_rank
-        )
-        return r
+    rank_log_path = os.path.join(
+        args.output_dir, args.logging_dir, "timestep_rank.log"
+    )
+    if accelerator.is_main_process and args.tlora:
+        max_timestep = noise_scheduler_copy.config.num_train_timesteps
+        reference_timesteps = list(range(100, max_timestep + 1, 100))
+        if not reference_timesteps or reference_timesteps[-1] != max_timestep:
+            reference_timesteps.append(max_timestep)
+
+        rank_table_lines = [
+            "T-LoRA timestep/rank mapping "
+            f"(max_rank={args.rank}, min_rank={args.min_rank}, "
+            f"max_timestep={max_timestep}, schedule={args.rank_schedule}):"
+        ]
+        for reference_timestep in reference_timesteps:
+            reference_rank = get_rank_by_timestep(
+                reference_timestep,
+                max_timestep=max_timestep,
+                max_rank=args.rank,
+                min_rank=args.min_rank,
+                rank_schedule=args.rank_schedule,
+            )
+            rank_table_lines.append(
+                f"  timestep={reference_timestep:4d} -> rank={reference_rank}"
+            )
+
+        rank_table = "\n".join(rank_table_lines)
+        print(rank_table)
+        with open(rank_log_path, "w", encoding="utf-8") as rank_log_file:
+            rank_log_file.write(rank_table + "\n\n")
+            rank_log_file.write("global_step,diffusion_timestep,effective_rank\n")
 
     def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
         sigmas = noise_scheduler_copy.sigmas.to(device=accelerator.device, dtype=dtype)
@@ -340,11 +391,13 @@ def run_train(args):
                     guidance = None
 
                 if args.tlora:
+                    sampled_timestep = float(timesteps[0].detach().item())
                     r = get_rank_by_timestep(
-                        timestep=timesteps[0],
+                        timestep=sampled_timestep,
                         max_timestep=noise_scheduler_copy.num_train_timesteps,
                         max_rank=args.rank,
                         min_rank=args.min_rank,
+                        rank_schedule=args.rank_schedule,
                     )
                     sigma_mask = torch.zeros((1, args.rank))
                     sigma_mask[:, :r] = 1.0
@@ -417,6 +470,24 @@ def run_train(args):
                 global_step += 1
 
                 if accelerator.is_main_process:
+                    if (
+                        args.tlora
+                        and args.rank_logging_steps > 0
+                        and global_step % args.rank_logging_steps == 0
+                    ):
+                        rank_log_line = (
+                            f"global_step={global_step}, "
+                            f"diffusion_timestep={sampled_timestep:g}, "
+                            f"effective_rank={r}"
+                        )
+                        print(rank_log_line)
+                        with open(
+                            rank_log_path, "a", encoding="utf-8"
+                        ) as rank_log_file:
+                            rank_log_file.write(
+                                f"{global_step},{sampled_timestep:g},{r}\n"
+                            )
+
                     if global_step % args.checkpointing_steps == 0:
                         save_path = os.path.join(
                             args.output_dir, f"checkpoint-{global_step}"
@@ -447,6 +518,7 @@ def run_train(args):
                                 torch_dtype=weight_dtype,
                                 max_rank=args.rank,
                                 min_rank = args.min_rank,
+                                rank_schedule=args.rank_schedule,
                             )
                         else:
                             pipeline = FluxPipeline.from_pretrained(

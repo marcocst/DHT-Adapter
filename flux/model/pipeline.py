@@ -17,6 +17,7 @@ from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, FluxTransf
 from diffusers.pipelines.flux.pipeline_flux_controlnet import FluxControlNetPipeline
 from diffusers.pipelines.flux.pipeline_output import FluxPipelineOutput
 from diffusers.models.controlnets.controlnet_flux import FluxControlNetModel, FluxMultiControlNetModel
+from .rank_schedule import get_rank_by_timestep
 
 XLA_AVAILABLE = False
 USE_PEFT_BACKEND = False
@@ -36,6 +37,7 @@ class TLoRAFluxPipeline(FluxPipeline):
         feature_extractor=None,
         max_rank=None,
         min_rank=1,
+        rank_schedule="decreasing",
     ):
         super().__init__(
             scheduler=scheduler,
@@ -50,13 +52,16 @@ class TLoRAFluxPipeline(FluxPipeline):
         )
         self.max_rank = max_rank
         self.min_rank = min_rank
+        self.rank_schedule = rank_schedule
 
     def get_rank_by_timestep(self, timestep, max_timestep, max_rank, min_rank=1):
-        r = (
-            int((max_timestep - timestep) * (max_rank - min_rank) / max_timestep)
-            + min_rank
+        return get_rank_by_timestep(
+            timestep,
+            max_timestep,
+            max_rank,
+            min_rank,
+            self.rank_schedule,
         )
-        return r
 
     @torch.no_grad()
     def __call__(
@@ -382,6 +387,7 @@ class TLoRAFluxControlNetSwitchingPipeline(FluxControlNetPipeline):
         image_encoder=None,
         max_rank=None,
         min_rank=1,
+        rank_schedule="decreasing",
     ):
         super().__init__(
             scheduler=scheduler, vae=vae, text_encoder=text_encoder, tokenizer=tokenizer,
@@ -389,13 +395,16 @@ class TLoRAFluxControlNetSwitchingPipeline(FluxControlNetPipeline):
         )
         self.max_rank = max_rank
         self.min_rank = min_rank
+        self.rank_schedule = rank_schedule
 
     def get_rank_by_timestep(self, timestep, max_timestep, max_rank, min_rank=1):
-        r = (
-            int((max_timestep - timestep) * (max_rank - min_rank) / max_timestep)
-            + min_rank
+        return get_rank_by_timestep(
+            timestep,
+            max_timestep,
+            max_rank,
+            min_rank,
+            self.rank_schedule,
         )
-        return r
 
     @torch.no_grad()
     def __call__(

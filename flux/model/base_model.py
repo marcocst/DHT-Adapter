@@ -58,9 +58,12 @@ def setup_base_model(args, accelerator, weight_dtype):
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
 
+    # if args.gradient_checkpointing:
+    #     transformer.enable_gradient_checkpointing()
+    #     if args.train_text_encoder:
+    #         text_encoder_one.gradient_checkpointing_enable()
+
     if args.gradient_checkpointing:
-        transformer.enable_gradient_checkpointing()
-        if args.train_text_encoder:
-            text_encoder_one.gradient_checkpointing_enable()
+        transformer.enable_gradient_checkpointing()  # 上面注释的是真实的
 
     return tokenizer_one, tokenizer_two, text_encoder_cls_one, text_encoder_cls_two, text_encoder_one, text_encoder_two, vae, transformer, noise_scheduler, noise_scheduler_copy

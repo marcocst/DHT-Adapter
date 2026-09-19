@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 import tqdm
 import gc
+from functools import partial
 
 import torch
 import torchvision
@@ -14,6 +15,7 @@ from diffusers.pipelines import FluxPipeline
 from diffusers.loaders import AttnProcsLayers
 
 from model.lora import (
+    BSALinearLayer,
     FluxLoraAttnProcessor,
     LoRALinearLayer,
     set_flux_transformer_attn_processor,
@@ -118,16 +120,27 @@ def main(args):
         pipe = TLoRAFluxPipeline.from_pretrained(
             config['pretrained_model_name_or_path'], torch_dtype=torch.bfloat16,
             max_rank=config['rank'], min_rank=config['min_rank'],
+            rank_schedule=config.get('rank_schedule', 'decreasing'),
         ).to('cuda')
     else:
         pipe = FluxPipeline.from_pretrained(config['pretrained_model_name_or_path'], torch_dtype=torch.bfloat16).to('cuda')
 
+    adapter_type = config.get("adapter_type", "lora")
+    if adapter_type == "bsa":
+        # A/B/S/S_ref are restored from the checkpoint.  Do not recompute the
+        # randomized low-rank SVD during inference.
+        adapter_linear_layer = partial(BSALinearLayer, init_mode="checkpoint")
+    else:
+        adapter_linear_layer = LoRALinearLayer
+
     set_flux_transformer_attn_processor(
         pipe.transformer,
-        set_attn_proc_func=lambda name, dh, nh, ap: FluxLoraAttnProcessor(
-            hidden_size=pipe.transformer.inner_dim, rank=config['rank'], 
-            lora_linear_layer=LoRALinearLayer,
-            do_training=False, 
+        set_attn_proc_func=lambda name, dh, nh, ap, original_layer: FluxLoraAttnProcessor(
+            hidden_size=pipe.transformer.inner_dim,
+            rank=config['rank'],
+            lora_linear_layer=adapter_linear_layer,
+            do_training=False,
+            original_layer=(original_layer if adapter_type == "bsa" else None),
         ),
     )
     lora_layers = AttnProcsLayers(pipe.transformer.attn_processors)

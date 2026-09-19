@@ -43,6 +43,46 @@ def parse_args(input_args=None):
         default=False,
     )
     parser.add_argument(
+        "--adapter_type",
+        type=str,
+        default="lora",
+        choices=["lora", "bsa"],
+        help=(
+            "Adapter parameterization. 'lora' keeps the original BA adapter; "
+            "'bsa' freezes non-zero A/B bases and trains only a rank-by-rank S matrix."
+        ),
+    )
+    parser.add_argument(
+        "--bsa_init",
+        type=str,
+        default="random",
+        choices=["random", "svd"],
+        help=(
+            "BSA initialization. 'random' uses frozen non-zero random A/B and S=0. "
+            "'svd' decomposes each pretrained W0 projection as U_r Sigma_r V_r^T, "
+            "freezes B=U_r and A=V_r^T, and trains S from Sigma_r with a dynamic reference shift."
+        ),
+    )
+    parser.add_argument(
+        "--bsa_svd_oversample",
+        type=int,
+        default=4,
+        help="SVD low-rank workspace q is min(rank * this value, min(W0.shape)).",
+    )
+    parser.add_argument(
+        "--bsa_svd_niter",
+        type=int,
+        default=4,
+        help="Number of subspace iterations used by torch.svd_lowrank for W0 initialization.",
+    )
+    parser.add_argument(
+        "--bsa_svd_device",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Device used only while computing the truncated SVD of pretrained W0 projections.",
+    )
+    parser.add_argument(
         "--rank",
         type=int,
         default=16,
@@ -53,6 +93,28 @@ def parse_args(input_args=None):
         type=int,
         default=16,
         help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--rank_schedule",
+        type=str,
+        default="decreasing",
+        choices=["decreasing", "increasing"],
+        help=(
+            "Effective-rank direction with respect to diffusion timestep. "
+            "'decreasing' preserves the original T-LoRA behavior (larger timestep -> "
+            "smaller rank); 'increasing' is the reversed ablation (larger timestep -> "
+            "larger rank)."
+        ),
+    )
+    parser.add_argument(
+        "--rank_logging_steps",
+        type=int,
+        default=100,
+        help=(
+            "Print and append the sampled diffusion timestep and effective "
+            "T-LoRA rank every N optimization steps. Set to 0 to disable "
+            "periodic logging; the startup timestep/rank table is still written."
+        ),
     )
     parser.add_argument(
         "--revision",
@@ -384,6 +446,15 @@ def parse_args(input_args=None):
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
 
+    if args.min_rank > args.rank:
+        parser.error("--min_rank must be less than or equal to --rank.")
+    if args.rank_logging_steps < 0:
+        parser.error("--rank_logging_steps must be greater than or equal to 0.")
+    if args.bsa_svd_oversample < 1:
+        parser.error("--bsa_svd_oversample must be at least 1.")
+    if args.bsa_svd_niter < 0:
+        parser.error("--bsa_svd_niter must be non-negative.")
+
     return args
 
 
@@ -391,6 +462,8 @@ def run(args):
     image_name = os.path.basename(os.path.normpath(args.instance_data_dir))
     exp = setup_exp_name(args.output_dir, image_name)
     name = 'lora' if not args.tlora else 'tlora' + f'{args.rank}'
+    if args.adapter_type == "bsa":
+        name += f'_bsa-{args.bsa_init}'
     exp += '_' + name
 
     args.output_dir = os.path.join(args.output_dir, exp)
@@ -403,3 +476,13 @@ def run(args):
 if __name__ == "__main__":
     args = parse_args()
     run(args)
+
+
+
+
+# 正确的运行命令：
+# accelerate launch   run.py   --pretrained_model_name_or_path="$MODEL_NAME"   --instance_data_dir="$INSTANCE_DIR"   --output_dir="$OUTPUT_DIR"    --class_name="dog"   --placeholder_token="sks"   --one_image="02.jpg"    --max_train_steps=1000   --checkpointing_steps=100  --validation_prompt="a {0} in the jungle"    --tlora   --rank=32   --min_rank=1
+
+
+# 下面是SVD的命令：
+# accelerate launch   run.py   --pretrained_model_name_or_path="$MODEL_NAME"   --instance_data_dir="$INSTANCE_DIR"   --output_dir="$OUTPUT_DIR"    --class_name="glasses"   --placeholder_token="sks"   --one_image="02.jpg"    --max_train_steps=1000   --checkpointing_steps=100  --validation_prompt="a photo of {0} in the jungle"    --tlora   --rank=512   --min_rank=128 --adapter_type=bsa --bsa_init=svd --bsa_svd_device=auto  --bsa_svd_niter=8

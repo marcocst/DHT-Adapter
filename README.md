@@ -100,6 +100,68 @@ We are utilizing the following flags in the command mentioned above
 
 The optimal number of training steps may vary depending on the specific concept.
 
+### FLUX adapter parameterizations
+
+The FLUX implementation supports the original LoRA/T-LoRA adapter and a BSA
+parameterization with a trainable rank-by-rank middle matrix:
+
+\[
+\Delta W(t) = B M(t) (S - S_{ref}) M(t) A
+\]
+
+`A` and `B` are frozen in BSA mode, only `S` is optimized, and `M(t)` keeps the
+original timestep-dependent rank schedule. Existing checkpoints remain
+compatible because `--adapter_type=lora` is the default.
+
+Random frozen-basis BSA uses non-zero random `A` and `B`, with `S=0` and
+`S_ref=0`, so the initial adapter update is exactly zero:
+
+```bash
+accelerate launch run.py \
+  --pretrained_model_name_or_path="$MODEL_NAME" \
+  --instance_data_dir="$INSTANCE_DIR" \
+  --output_dir="$OUTPUT_DIR" \
+  --class_name="dog" \
+  --placeholder_token="sks" \
+  --max_train_steps=1000 \
+  --checkpointing_steps=100 \
+  --tlora \
+  --adapter_type=bsa \
+  --bsa_init=random \
+  --rank=32 \
+  --min_rank=1
+```
+
+SVD BSA decomposes each pretrained attention projection `W0` directly (not a
+gradient matrix), initializes `B=U_r`, `S=S_ref=Sigma_r`, and `A=V_r^T`, then
+trains only `S`. Subtracting `S_ref` dynamically preserves the original model
+at initialization for every timestep-dependent rank:
+
+```bash
+accelerate launch run.py \
+  --pretrained_model_name_or_path="$MODEL_NAME" \
+  --instance_data_dir="$INSTANCE_DIR" \
+  --output_dir="$OUTPUT_DIR" \
+  --class_name="dog" \
+  --placeholder_token="sks" \
+  --max_train_steps=1000 \
+  --checkpointing_steps=100 \
+  --tlora \
+  --adapter_type=bsa \
+  --bsa_init=svd \
+  --bsa_svd_device=auto \
+  --bsa_svd_oversample=4 \
+  --bsa_svd_niter=4 \
+  --rank=32 \
+  --min_rank=1
+```
+
+`--bsa_svd_device=auto` performs each truncated SVD on the device holding the
+pretrained projection. Use `cpu` to reduce the temporary GPU-memory peak at the
+cost of slower initialization. BSA checkpoints save frozen `A`/`B`, trainable
+`S`, and `S_ref`; inference restores these tensors directly and does not repeat
+the SVD.
+
 
 After the training you will obtain the experiment folder in the following structure:
 
