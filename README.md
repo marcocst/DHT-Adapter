@@ -1,4 +1,4 @@
-# T-LoRA: Single Image Diffusion Model Customization Without Overfitting
+# DHT-Adapter: Dynamic Hierarchical Low-Rank Adaptation across Diffusion Timesteps
 
 <a href="https://arxiv.org/abs/2507.05964"><img src="https://img.shields.io/badge/arXiv-2502.06606-b31b1b.svg" height=22.5></a><!-- <a href="https://arxiv.org/abs/2502.06606"><img src="https://img.shields.io/badge/arXiv-2502.06606-b31b1b.svg" height=22.5></a> -->
 <a href="https://controlgenai.github.io/T-LoRA/"><img src="https://img.shields.io/badge/Project-Website-blue" height=22.5><a>
