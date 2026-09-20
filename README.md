@@ -4,9 +4,7 @@ Official implementation of DHT-Adapter, a structured low-rank adaptation method 
 
 DHT-Adapter factorizes each personalized update as
 
-[
-\Delta W(t)=B^{(t)}\Phi^{(t)}A^{(t)},
-]
+$\Delta W(t)=B^{(t)}\Phi^{(t)}A^{(t)},$
 
 where the orthogonal boundary matrices (A) and (B) are frozen and only the subject-specific intermediate matrix (\Phi) is optimized. During denoising, nested matrix blocks are activated according to the current timestep: a compact rank is used at high noise levels, while additional capacity is progressively introduced as the noise decreases.
 
