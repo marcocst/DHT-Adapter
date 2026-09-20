@@ -1,4 +1,4 @@
-DHT-Adapter
+# DHT-Adapter
 
 Official implementation of DHT-Adapter, a structured low-rank adaptation method with dynamic rank scheduling for diffusion personalization.
 
@@ -6,19 +6,10 @@ DHT-Adapter factorizes each personalized update as
 
 $\Delta W(t)=B^{(t)}\Phi^{(t)}A^{(t)},$
 
-where the orthogonal boundary matrices (A) and (B) are frozen and only the subject-specific intermediate matrix (\Phi) is optimized. During denoising, nested matrix blocks are activated according to the current timestep: a compact rank is used at high noise levels, while additional capacity is progressively introduced as the noise decreases.
+where the orthogonal boundary matrices (A) and (B) are frozen and only the subject-specific intermediate matrix $\Phi$ is optimized. During denoising, nested matrix blocks are activated according to the current timestep: a compact rank is used at high noise levels, while additional capacity is progressively introduced as the noise decreases.
 
-Highlights
 
-Structured adaptation: frozen orthogonal boundaries constrain personalized updates to a pretrained subspace.
-
-Parameter efficiency: only the intermediate matrix is trained and stored for each subject.
-
-Dynamic rank scheduling: the effective rank changes across diffusion timesteps.
-
-Backbone support: training and inference scripts are provided for FLUX.1-dev and SDXL.
-
-Requirements
+### Requirements
 
 Linux
 
@@ -79,7 +70,7 @@ cd T-LoRA
 conda env create -f tlora_env.yml
 conda activate tlora
 
-Training
+### Training
 
 export MODEL_NAME="stabilityai/stable-diffusion-xl-base-1.0"
 export INSTANCE_DIR="dog_example"
@@ -103,7 +94,7 @@ accelerate launch train.py \
   --min_rank=32 \
   --sig_type="last"
 
-Inference
+### Inference
 
 export CONFIG_PATH="trained-dht_dog/<experiment-directory>/logs/hparams.yml"
 
@@ -124,10 +115,10 @@ Remove --one_image to train on all reference images.
 
 For FLUX, --mask_dir=<path> enables mask-guided subject training.
 
-Acknowledgements
+### Acknowledgements
 
-This implementation builds on T-LoRA, Diffusers, and PEFT. We thank their authors and open-source communities.
+This implementation builds on huggingface, PEFT, T-LoRA and Diffusers. We thank their authors and open-source communities.
 
-Citation
+### Citation
 
 Citation information will be added upon publication.
