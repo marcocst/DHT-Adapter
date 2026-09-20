@@ -1,4 +1,4 @@
-# DHT-Adapter
+# DHT-Adapter: Dynamic Hierarchical Low-Rank Adaptation across Diffusion Timesteps
 
 Official implementation of DHT-Adapter, a structured low-rank adaptation method with dynamic rank scheduling for diffusion personalization.
 
