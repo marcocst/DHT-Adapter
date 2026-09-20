@@ -84,7 +84,7 @@ accelerate launch train.py \
   --output_dir="$OUTPUT_DIR" \
   --trainer_type="ortho_lora" \
   --trainer_class="sdxl_tlora" \
-  --num_train_epochs=800 \
+  --num_train_epochs=1000 \
   --checkpointing_steps=100 \
   --resolution=1024 \
   --validation_prompts="a {0} riding a bike#a {0} dressed as a ballerina" \
